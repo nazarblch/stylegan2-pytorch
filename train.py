@@ -17,7 +17,7 @@ try:
 except ImportError:
     wandb = None
 
-from model import Generator, Discriminator
+from model import Generator, Discriminator, ProjectionGenerator
 from dataset import MultiResolutionDataset
 from distributed import (
     get_rank,
@@ -165,7 +165,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
         if p.grad is None:
             none_d_grads.add(n)
 
-    sample_z = torch.randn(8 * 8, args.latent, device=device)
+    sample_z = torch.randn(2 * 2, args.latent, device=device)
 
     for i in pbar:
         real_img = next(loader)
@@ -204,18 +204,21 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
         loss_dict['r1'] = r1_loss
 
-        requires_grad(generator, True)
+        requires_grad(generator.proj, True)
         requires_grad(discriminator, False)
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img, _ = generator(noise)
+        noise_proj_loss = sum([(generator.proj(noise_i) - noise_i).abs().sum() for noise_i in noise])
         fake_pred = discriminator(fake_img)
         g_loss = g_nonsaturating_loss(fake_pred)
+
+        print(noise_proj_loss.item())
 
         loss_dict['g'] = g_loss
 
         generator.zero_grad()
-        g_loss.backward()
+        (g_loss + noise_proj_loss).backward()
         g_optim.step()
 
         g_regularize = i % args.g_reg_every == 0
@@ -282,18 +285,6 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
                     }
                 )
 
-            if i % 100 == 0:
-                with torch.no_grad():
-                    g_ema.eval()
-                    sample, _ = g_ema([sample_z])
-                    utils.save_image(
-                        sample,
-                        f'sample/{str(i).zfill(6)}.png',
-                        nrow=8,
-                        normalize=True,
-                        range=(-1, 1),
-                    )
-
             if i % 10000 == 0:
                 torch.save(
                     {
@@ -306,6 +297,19 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
                     f'checkpoint/{str(i).zfill(6)}.pt',
                 )
 
+            if i % 100 == 0:
+                with torch.no_grad():
+                    g_ema.eval()
+                    sample, _ = g_ema([sample_z])
+                    utils.save_image(
+                        sample,
+                        f'sample/{str(i).zfill(6)}.png',
+                        nrow=2,
+                        normalize=True,
+                        range=(-1, 1),
+                    )
+
+
 
 if __name__ == '__main__':
     device = 'cuda'
@@ -315,7 +319,7 @@ if __name__ == '__main__':
     parser.add_argument('path', type=str)
     parser.add_argument('--iter', type=int, default=800000)
     parser.add_argument('--batch', type=int, default=16)
-    parser.add_argument('--size', type=int, default=256)
+    parser.add_argument('--size', type=int, default=128)
     parser.add_argument('--r1', type=float, default=10)
     parser.add_argument('--path_regularize', type=float, default=2)
     parser.add_argument('--path_batch_shrink', type=int, default=2)
@@ -330,6 +334,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    print(args)
+
     n_gpu = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
     args.distributed = n_gpu > 1
 
@@ -341,15 +347,18 @@ if __name__ == '__main__':
     args.latent = 512
     args.n_mlp = 8
 
-    generator = Generator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
-    ).to(device)
+    # generator = Generator(
+    #     args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+    # ).to(device)
+    generator = ProjectionGenerator("stylegan2-ffhq-config-f.pt").to(device)
+
     discriminator = Discriminator(
         args.size, channel_multiplier=args.channel_multiplier
     ).to(device)
-    g_ema = Generator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
-    ).to(device)
+    # g_ema = Generator(
+    #     args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+    # ).to(device)
+    g_ema = ProjectionGenerator("stylegan2-ffhq-config-f.pt").to(device)
     g_ema.eval()
     accumulate(g_ema, generator, 0)
 
@@ -372,13 +381,13 @@ if __name__ == '__main__':
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
 
     g_optim = optim.Adam(
-        generator.parameters(),
+        generator.proj.parameters(),
         lr=args.lr * g_reg_ratio,
         betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio),
     )
     d_optim = optim.Adam(
         discriminator.parameters(),
-        lr=args.lr * d_reg_ratio,
+        lr=args.lr * d_reg_ratio / 2,
         betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio),
     )
 

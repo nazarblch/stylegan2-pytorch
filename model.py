@@ -529,6 +529,58 @@ class Generator(nn.Module):
             return image, None
 
 
+class ProjectionGenerator(nn.Module):
+
+    def __init__(self, ckpt):
+        super().__init__()
+
+        self.g_ema = Generator(
+            1024, 512, 8, channel_multiplier=2
+        )
+        checkpoint = torch.load(ckpt)
+
+        self.g_ema.load_state_dict(checkpoint['g_ema'])
+
+        self.g_ema.requires_grad_(False)
+
+        self.proj = nn.Sequential(
+            nn.Linear(512, 512),
+            # nn.LeakyReLU(0.2, inplace=True),
+            # nn.Linear(100, 512)
+        )
+
+        self.proj[0].bias.data.zero_()
+        self.proj[0].weight.data = torch.eye(512).to(self.proj[0].weight.data)
+        # self.proj[2].bias.data.zero_()
+
+        self.pool = nn.AvgPool2d(8)
+
+    def forward(self,
+                styles,
+                return_latents=False,
+                inject_index=None,
+                truncation=1,
+                truncation_latent=None,
+                input_is_latent=False,
+                noise=None,
+                ):
+
+        im1024, latent = self.g_ema(
+            [self.proj(s) for s in styles],
+            return_latents,
+            inject_index,
+            truncation,
+            truncation_latent,
+            input_is_latent,
+            noise
+        )
+
+        return self.pool(im1024), latent
+
+
+
+
+
 class ConvLayer(nn.Sequential):
     def __init__(
         self,

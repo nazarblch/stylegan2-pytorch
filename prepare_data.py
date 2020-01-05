@@ -1,18 +1,36 @@
 import argparse
+import numbers
 from io import BytesIO
 import multiprocessing
 from functools import partial
-
+from matplotlib import pyplot as plt
 from PIL import Image
 import lmdb
+from torchvision.transforms.functional import crop
 from tqdm import tqdm
 from torchvision import datasets
 from torchvision.transforms import functional as trans_fn
 
 
+def top_center_crop(img, output_size):
+    if isinstance(output_size, numbers.Number):
+        output_size = (int(output_size), int(output_size))
+    w, h = img.size
+    th, tw = output_size
+    i = 0
+    j = int(round((w - tw) / 2.))
+    return crop(img, i, j, th, tw)
+
+
 def resize_and_convert(img, size, quality=100):
-    img = trans_fn.resize(img, size, Image.LANCZOS)
-    img = trans_fn.center_crop(img, size)
+
+    size_pad = int(size * 1.2)
+
+    img = trans_fn.resize(img, size_pad, Image.LANCZOS)
+    img = top_center_crop(img, size_pad)
+    img = top_center_crop(img, size)
+    # plt.imshow(img)
+    # plt.show()
     buffer = BytesIO()
     img.save(buffer, format='jpeg', quality=quality)
     val = buffer.getvalue()
